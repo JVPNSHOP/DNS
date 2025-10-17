@@ -19,19 +19,26 @@
   <p id="result"></p>
 
   <script>
-    const API_URL = "https://jk-free-dns.jvpnshop.workers.dev/dns";
-    document.getElementById("dnsForm").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const name = document.getElementById("name").value;
-      const content = document.getElementById("content").value;
-      const res = await fetch(API_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "A", name, content })
-      });
-      const data = await res.json();
-      document.getElementById("result").innerText = JSON.stringify(data);
+  const API_URL = "https://jk-free-dns.jvpnshop.workers.dev/dns";
+  const ROOT = "jvpn.shop"; // <-- မင်း ROOT_DOMAIN
+
+  document.getElementById("dnsForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const raw = document.getElementById("name").value.trim();
+    // short name ဖြည့်ရင် .jvpn.shop ကို အလိုအလျောက်ပေါင်း
+    const host =
+      raw === ROOT || raw.endsWith("." + ROOT) ? raw : `${raw}.${ROOT}`;
+
+    const content = document.getElementById("content").value.trim();
+
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "A", name: host, content })
     });
-  </script>
-</body>
-</html>
+
+    const data = await res.json();
+    document.getElementById("result").innerText = JSON.stringify(data);
+  });
+</script>
