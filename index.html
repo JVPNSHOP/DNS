@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Free DNS UI</title>
+  <style>
+    body { font-family: sans-serif; margin: 40px; }
+    input, button { margin: 5px; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h2>Public DNS Editor</h2>
+  <form id="dnsForm">
+    <input type="text" id="name" placeholder="Host name (e.g. test)" required>
+    <input type="text" id="content" placeholder="IP address (e.g. 1.1.1.1)" required>
+    <button type="submit">Add Record</button>
+  </form>
+
+  <p id="result"></p>
+
+  <script>
+    const API_URL = "https://jk-free-dns.jvpnshop.workers.dev/dns";
+    document.getElementById("dnsForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = document.getElementById("name").value;
+      const content = document.getElementById("content").value;
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "A", name, content })
+      });
+      const data = await res.json();
+      document.getElementById("result").innerText = JSON.stringify(data);
+    });
+  </script>
+</body>
+</html>
