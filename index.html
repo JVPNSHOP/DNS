@@ -63,6 +63,7 @@
     button.ghost{
       background:#fff; color:var(--accent); border:1px solid var(--accent); font-weight:700;
     }
+    button[disabled]{ opacity: .6; cursor: not-allowed; }
     #msg{margin-top:10px; padding:12px; border-radius:12px; background:#f8fafc; border:1px solid var(--line); min-height:44px}
     @media (max-width:680px){
       .row{grid-template-columns:1fr}
@@ -178,6 +179,7 @@
     const proxiedEl = document.getElementById("proxied");
     const ttlEl = document.getElementById("ttl");
     const msg = document.getElementById("msg");
+    const addBtn = document.getElementById("addBtn");
 
     const srvTimeEl = document.getElementById("srvTime");
     const ipEl = document.getElementById("ip");
@@ -197,7 +199,7 @@
         case "TXT": contentLabel.textContent="TXT Value"; contentEl.placeholder='e.g. v=spf1 include:_spf.example ~all'; break;
         case "MX": contentLabel.textContent="Mail Server"; contentEl.placeholder="e.g. mail.example.com"; break;
         case "NS": contentLabel.textContent="Nameserver Host"; contentEl.placeholder="e.g. ns1.example.com"; break;
-        case "CAA": contentLabel.textContent="CAA Value"; contentEl.placeholder='e.g. 0 issue "letsencrypt.org"'; break;
+        case "CAA": contentLabel.textContent="CAA Value"; contentEl.placeholder='e.g. 0 issue \"letsencrypt.org\"'; break;
         case "HTTPS": contentLabel.textContent="Value"; contentEl.placeholder="HTTPS record value"; break;
       }
     }
@@ -218,7 +220,7 @@
       else { msg.style.borderColor="#ef4444"; msg.style.background="#fef2f2"; }
     }
 
-    // Duplicate guard
+    // Duplicate guard (local)
     const LS_KEY = "jk_vip_dns_created";
     function alreadyCreated(type,name){
       try{
@@ -241,6 +243,102 @@
       setPlaceholders(); msg.textContent=""; hostEl.focus();
     });
 
+    // Helper: robust parse for various server response shapes
+    function parseResponse(resp){
+      // resp may be object or something else
+      if(!resp) return { ok:false, raw: resp };
+
+      // Common shapes:
+      // { ok: true, record: {...}, action: 'create' }
+      // { success: true, action: 'create', record: {...} }   <-- Cloudflare-like shown in screenshot
+      // { success: true, id: '...', name: '...', content: '...' }  (less common)
+      // { error: 'already exists' }
+      // Or server might return string containing JSON (rare)
+      try{
+        // If resp is string, try parse
+        if(typeof resp === "string"){
+          try{
+            const j = JSON.parse(resp);
+            return parseResponse(j);
+          }catch(e){
+            // not JSON string; look for "success":true inside text
+            const lower = resp.toLowerCase();
+            if(lower.includes('"success":true') || lower.includes("'success':true")){
+              // try to extract JSON substring
+              const p = resp.indexOf('{');
+              try{
+                const j2 = JSON.parse(resp.slice(p));
+                return parseResponse(j2);
+              }catch(e2){
+                return { ok:true, raw:resp, info: 'success-text' };
+              }
+            }
+            return { ok:false, raw:resp };
+          }
+        }
+
+        // It's an object
+        const obj = resp;
+        // If Cloudflare-like
+        if(obj.success === true && obj.record){
+          return { ok:true, record: obj.record, action: obj.action || null, raw: obj };
+        }
+        // If top-level ok
+        if(obj.ok === true && obj.record){
+          return { ok:true, record: obj.record, action: obj.action || null, raw: obj };
+        }
+        // If fields present without wrapper
+        if(obj.name && obj.content && obj.type){
+          return { ok:true, record: { name: obj.name, content: obj.content, type: obj.type, id: obj.id||null }, raw: obj };
+        }
+        // If server returns { error: "..." }
+        if(obj.error){
+          return { ok:false, error: String(obj.error), raw: obj };
+        }
+        // If server returns { errors: [...] }
+        if(obj.errors && Array.isArray(obj.errors) && obj.errors.length){
+          const e0 = obj.errors[0];
+          const msg = (e0 && e0.message) ? e0.message : JSON.stringify(obj.errors);
+          return { ok:false, error: msg, raw: obj };
+        }
+        // Last resort: contains nested success somewhere
+        if(obj.result && obj.result.success === true && obj.result.record){
+          return { ok:true, record: obj.result.record, raw: obj };
+        }
+
+        // Not recognized
+        return { ok:false, raw: obj };
+      }catch(err){
+        return { ok:false, raw: resp, parseError: err.message };
+      }
+    }
+
+    async function submitPayload(payload){
+      // disable to prevent double submit
+      addBtn.disabled = true;
+      addBtn.textContent = "Processing…";
+      try{
+        const res = await fetch(API_URL, {
+          method:"POST",
+          headers:{ "Content-Type":"application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        // try to parse JSON even if non-200
+        let data;
+        try{ data = await res.json(); }catch(e){
+          // maybe text
+          try{ data = await res.text(); }catch(e2){ data = null; }
+        }
+        return parseResponse(data);
+      }catch(err){
+        return { ok:false, error: "Network error: "+(err && err.message ? err.message : String(err)) };
+      }finally{
+        addBtn.disabled = false;
+        addBtn.textContent = "Add Record";
+      }
+    }
+
     document.getElementById("dnsForm").addEventListener("submit", async (e)=>{
       e.preventDefault();
       const type = typeEl.value;
@@ -255,6 +353,7 @@
       }
       if(!content){ show("err","❌ Content required"); return; }
 
+      // local duplicate guard
       if(alreadyCreated(type,name)){
         show("warn","⚠️ အဲ့ဒီနာမည်နဲ့ record ကို ပြီးသားထည့်ထားပါတယ်—ထပ်မပြုလုပ်ပါ။");
         return;
@@ -271,29 +370,56 @@
       }
 
       show("warn","Processing…");
-      try{
-        const res = await fetch(API_URL, {
-          method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload)
-        });
-        const data = await res.json();
 
-        if(data && data.ok && data.record){
-          const a = data.action || "saved";
-          show("ok", `Done ✅ : ${data.record.name} → ${data.record.type} ${data.record.content} (${a})`);
-          markCreated(type, name);
-        }else if(data && data.error){
-          if(String(data.error).toLowerCase().includes("already")){
-            show("warn","⚠️ အဲ့ဒီနာမည်နဲ့ record ရှိပြီးသားမဖြစ်နိုင်ပါ။");
-            markCreated(type, name);
-          }else{
-            show("err","❌ Error: "+data.error);
-          }
-        }else{
-          show("err","❌ Unexpected response: "+JSON.stringify(data));
-        }
-      }catch(err){
-        show("err","❌ Network error: "+err.message);
+      // Submit
+      const result = await submitPayload(payload);
+
+      // Interpret
+      if(result.ok && result.record){
+        // success
+        const rec = result.record;
+        const recName = rec.name || name;
+        const recType = rec.type || type;
+        const recContent = rec.content || rec.target || content;
+        show("ok", `✅ Create Successfully: ${recContent} - ${recName}`);
+        markCreated(recType, recName);
+        return;
       }
+
+      // if server indicated already exists
+      if(result.error){
+        const low = String(result.error).toLowerCase();
+        if(low.includes("already") || low.includes("exists") || low.includes("duplicate")){
+          show("warn","⚠️ အဲ့ဒီနာမည်နဲ့ record ရှိပြီးသား ဖြစ်နိုင်သည်။");
+          // mark locally to avoid further tries
+          markCreated(type,name);
+          return;
+        }else{
+          show("err","❌ Error: "+result.error);
+          return;
+        }
+      }
+
+      // Raw fallback: maybe the server returned a raw object with success:true but different shape
+      if(result.raw){
+        // check raw for success flag
+        try{
+          const r = result.raw;
+          if(r && (r.success === true || r.ok === true || (typeof r === 'object' && (r.id || r.record)))){
+            const rec = r.record || { name: r.name, content: r.content, type: r.type, id: r.id };
+            const recName = (rec && rec.name) ? rec.name : name;
+            const recContent = (rec && (rec.content||rec.target)) ? (rec.content||rec.target) : content;
+            const recType = (rec && rec.type) ? rec.type : type;
+            show("ok", `✅ Create Successfully: ${recContent} - ${recName}`);
+            markCreated(recType, recName);
+            return;
+          }
+        }catch(_){}
+      }
+
+      // If we reach here it's unexpected
+      show("err","❌ Unexpected response: "+JSON.stringify(result.raw || {}));
+      console.error("Unrecognized server response:", result);
     });
 
     // ===== Accurate Server Time (by IP timezone) =====
@@ -310,7 +436,7 @@
             tzLabel = j.timezone || "";
           }
         }
-      }catch(_){}
+      }catch(_){} 
       function fmt(ms){
         const d = new Date(ms);
         const y = d.getFullYear();
